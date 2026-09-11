@@ -447,7 +447,7 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
                             showReport = true
                             exportMessage = "Summary copied (${text.length} chars). Paste it anywhere."
                         }
-                    }) { Text("Copy summary") }
+                    }) { Text("Copy summary  ← start here") }
 
                     OutlinedButton(onClick = {
                         scope.launch {
@@ -473,7 +473,12 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
                 ) {
                     OutlinedButton(onClick = {
                         scope.launch {
-                            val text = exporter.buildSensorReport(inventory, controller.trace)
+                            val text = exporter.buildFullReport(
+                                inventory,
+                                controller.trace,
+                                appState(controller, progress, calibration, storedCalibration, renderPath, activeQuality)
+                                    + probeState(probeStats),
+                            )
                             clipboard?.setPrimaryClip(
                                 ClipData.newPlainText("FoldPhase full report", text),
                             )
@@ -482,7 +487,7 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
                             exportMessage =
                                 "Full report copied (${text.length} chars) — every sensor included."
                         }
-                    }) { Text("Copy FULL report") }
+                    }) { Text("Copy everything") }
 
                     OutlinedButton(onClick = {
                         scope.launch {
@@ -597,6 +602,29 @@ private fun probeState(stats: List<ProbeStats>): Map<String, String> =
  * These are the values that distinguish "the sensor is wrong" from "the app misread a
  * correct sensor", which is the first fork in almost every diagnosis.
  */
+/**
+ * A one-line answer to the question the whole diagnostic loop exists to settle.
+ *
+ * Put at the very top of every export because the alternative — inferring it from an
+ * events count buried among twenty other rows — has already cost two round trips.
+ */
+private fun continuousAngleVerdict(controller: FoldController): String {
+    val src = controller.dualAccelSource
+    return when {
+        src.subAccel == null ->
+            "NO SECOND ACCELEROMETER — continuous angle not possible on this device"
+        src.mainEvents < 5L ->
+            "INCONCLUSIVE — move the phone around, then copy again (main accel quiet)"
+        src.subEvents == 0L ->
+            "SECOND ACCELEROMETER IS GATED — it is listed but delivers nothing. " +
+                "Continuous hinge angle is NOT available to an unprivileged app"
+        src.subEvents > 5L ->
+            "CONTINUOUS ANGLE AVAILABLE via dual-accelerometer fusion " +
+                "(main=${src.mainEvents} sub=${src.subEvents})"
+        else -> "INCONCLUSIVE — keep moving the phone (sub=${src.subEvents})"
+    }
+}
+
 private fun appState(
     controller: FoldController,
     progress: dev.foldphase.core.FoldProgress,
@@ -607,6 +635,7 @@ private fun appState(
 ): Map<String, String> {
     val stats = controller.frameMetrics.snapshot()
     return linkedMapOf(
+        "VERDICT" to continuousAngleVerdict(controller),
         "render path" to (renderPath ?: "not resolved"),
         "shader quality" to "${quality.name} (${quality.taps} taps)" +
             if (controller.adaptiveQuality.hasStepped) " auto-stepped" else "",

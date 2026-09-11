@@ -88,9 +88,28 @@ class DebugExport(private val context: Context) {
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val file = File(exportDir, "sensor_report_${timestamp()}.txt")
-            file.writeText(buildSensorReport(inventory, trace, extraNotes))
+            file.writeText(buildFullReport(inventory, trace, extraNotes))
             file
         }
+    }
+
+    /**
+     * Summary first, then the exhaustive sensor enumeration.
+     *
+     * The full report used to omit the app-state and probe blocks, so the button labelled
+     * "full" produced strictly *less* of the information needed to diagnose anything. A
+     * report that is not a superset of the summary is a trap; this makes it one.
+     */
+    suspend fun buildFullReport(
+        inventory: SensorInventory,
+        trace: HingeTrace?,
+        state: Map<String, String> = emptyMap(),
+    ): String = buildString {
+        append(buildSummary(inventory, trace, state))
+        appendLine()
+        appendLine("=".repeat(60))
+        appendLine()
+        append(buildSensorReport(inventory, trace, state))
     }
 
     /**
@@ -125,6 +144,11 @@ class DebugExport(private val context: Context) {
     ): String = withContext(Dispatchers.Default) {
         buildString {
             appendLine("FoldPhase summary — ${Date()}")
+            state["VERDICT"]?.let {
+                appendLine()
+                appendLine("*** $it ***")
+                appendLine()
+            }
             appendLine("${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
             appendLine("Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / ${Build.DISPLAY}")
             appendLine()
