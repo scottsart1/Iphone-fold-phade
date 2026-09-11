@@ -96,16 +96,33 @@ With screenshots imported, fold the phone and watch the seam.
 
 ## Sending me diagnostics
 
-**Sensors → Sensor report** writes a text file containing your device identity, every
-sensor with all its properties, the observed hinge statistics, and any shader compile
-error.
+Go to **Sensors → Diagnostics report** and tap **Copy summary**. Then paste it into the
+chat. That is the whole procedure — no files, no file manager, no adb.
 
-**Sensors → Export CSV** writes the raw hinge trace.
+The summary is about thirty lines: your device and Android build, the hinge sensor's full
+specification, the angle range actually observed, which render path resolved, whether
+calibration is measured or provisional, whether the panel handoff has been learned, both
+panels' aspects, and frame timings. It is enough to diagnose nearly anything.
 
-Both land in the app's cache. To retrieve them without adb: open your file manager, go to
-`Android/data/dev.foldphase.app/cache/exports/`, and share the file. On some One UI
-versions that folder is restricted; if so, the readouts on the Sensors tab carry most of
-the same information and a screenshot of it is nearly as useful.
+Other buttons on that card:
+
+| Button | What it does |
+| --- | --- |
+| **Copy summary** | ~30 lines to the clipboard. Start here. |
+| **Share** | Same text, via the system share sheet. |
+| **Copy FULL report** | Every sensor on the device with all properties. Thousands of characters — only if asked. |
+| **Share hinge CSV** | The raw trace, as a file, through the share sheet. |
+
+Everything is also rendered on screen underneath, so you can read or screenshot it.
+
+**Why not just grab the file?** Earlier builds only wrote to
+`Android/data/dev.foldphase.app/cache/exports/`, which Android has blocked file managers
+from browsing since Android 11 — so the file was unreachable on the phone that made it.
+That was a design mistake; the clipboard path replaces it.
+
+**Move the hinge first.** A summary copied before the hinge has moved will honestly report
+"no samples recorded yet", which tells me much less. Fold the phone open and shut once,
+then copy.
 
 ---
 

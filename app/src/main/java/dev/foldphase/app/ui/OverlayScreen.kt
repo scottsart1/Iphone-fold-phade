@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.foldphase.app.CoverDisplayPresenter
 import dev.foldphase.app.FoldController
+import androidx.window.core.ExperimentalWindowApi
 import dev.foldphase.overlay.FoldOverlayService
 
 /**
@@ -35,7 +36,7 @@ import dev.foldphase.overlay.FoldOverlayService
  * enough that it belongs in front of the user, not only in a markdown file: the overlay
  * genuinely helps, and it genuinely cannot do the thing people assume it does.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalWindowApi::class)
 @Composable
 fun OverlayScreen(
     controller: FoldController,

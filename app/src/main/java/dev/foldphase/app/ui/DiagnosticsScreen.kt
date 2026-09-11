@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +21,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,6 +55,14 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
     val activeQuality by controller.activeQuality.collectAsStateWithLifecycle()
 
     var exportMessage by remember { mutableStateOf<String?>(null) }
+    var reportText by remember { mutableStateOf<String?>(null) }
+    var showReport by remember { mutableStateOf(false) }
+    // The platform clipboard rather than LocalClipboardManager: that composition local is
+    // deprecated, and its replacement's API shape differs between Compose releases, which
+    // is not a dependency worth taking for one call.
+    val clipboard = remember(context) {
+        context.getSystemService(ClipboardManager::class.java)
+    }
 
     val hinge = inventory.hinge
 
@@ -233,40 +244,106 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
 
         // ---- Export -------------------------------------------------------------
         item {
-            SectionCard("Export") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionCard("Diagnostics report") {
+                Text(
+                    "Copy summary is the one to use — about 30 lines, enough to diagnose " +
+                        "almost anything. Android blocks file managers from opening " +
+                        "Android/data, so a file written there is unreachable without " +
+                        "adb; the clipboard needs no file access at all.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 10.dp),
+                ) {
                     Button(onClick = {
                         scope.launch {
-                            exportMessage = exporter.exportTraceCsv(controller.trace).fold(
-                                onSuccess = { "Wrote ${it.name}" },
-                                onFailure = { "CSV export failed: ${it.message}" },
+                            val text = exporter.buildSummary(
+                                inventory,
+                                controller.trace,
+                                appState(controller, progress, calibration, storedCalibration, renderPath, activeQuality),
                             )
+                            clipboard?.setPrimaryClip(
+                                ClipData.newPlainText("FoldPhase diagnostics", text),
+                            )
+                            reportText = text
+                            showReport = true
+                            exportMessage = "Summary copied (${text.length} chars). Paste it anywhere."
                         }
-                    }) { Text("Export CSV") }
+                    }) { Text("Copy summary") }
 
                     OutlinedButton(onClick = {
                         scope.launch {
-                            exportMessage = exporter.exportSensorReport(
+                            val text = exporter.buildSummary(
                                 inventory,
                                 controller.trace,
-                            ).fold(
-                                onSuccess = { "Wrote ${it.name}" },
-                                onFailure = { "Report failed: ${it.message}" },
+                                appState(controller, progress, calibration, storedCalibration, renderPath, activeQuality),
+                            )
+                            reportText = text
+                            runCatching {
+                                context.startActivity(
+                                    exporter.shareText(text, "FoldPhase diagnostics"),
+                                )
+                            }.onFailure { exportMessage = "No app to share to: ${it.message}" }
+                        }
+                    }) { Text("Share") }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            val text = exporter.buildSensorReport(inventory, controller.trace)
+                            clipboard?.setPrimaryClip(
+                                ClipData.newPlainText("FoldPhase full report", text),
+                            )
+                            reportText = text
+                            showReport = true
+                            exportMessage =
+                                "Full report copied (${text.length} chars) — every sensor included."
+                        }
+                    }) { Text("Copy FULL report") }
+
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            exportMessage = exporter.exportTraceCsv(controller.trace).fold(
+                                onSuccess = { file ->
+                                    runCatching {
+                                        context.startActivity(exporter.shareIntent(file, "text/csv"))
+                                    }
+                                    "Sharing ${file.name}"
+                                },
+                                onFailure = { "CSV export failed: ${it.message}" },
                             )
                         }
-                    }) { Text("Sensor report") }
+                    }) { Text("Share hinge CSV") }
                 }
+
                 exportMessage?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
                 }
-                Text(
-                    "Files are written to the app cache and listed below; share them from " +
-                        "a file manager or via adb.",
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-                exporter.listExports().take(5).forEach { f ->
-                    Text("· ${f.name}", style = MonoNumber)
+
+                if (showReport && reportText != null) {
+                    HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                    Text(
+                        "Long-press to select, or screenshot it.",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    SelectionContainer {
+                        Text(
+                            text = reportText.orEmpty(),
+                            style = MonoNumber,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
                 }
             }
         }
@@ -321,4 +398,56 @@ private fun SensorDetail(info: SensorInfo) {
         Readout("Wake-up", if (info.isWakeUpSensor) "yes" else "no")
         Readout("Dynamic", if (info.isDynamic) "yes" else "no")
     }
+}
+
+/**
+ * The live app state worth putting in a summary.
+ *
+ * These are the values that distinguish "the sensor is wrong" from "the app misread a
+ * correct sensor", which is the first fork in almost every diagnosis.
+ */
+private fun appState(
+    controller: FoldController,
+    progress: dev.foldphase.core.FoldProgress,
+    effective: dev.foldphase.sensors.HingeCalibration,
+    stored: dev.foldphase.sensors.HingeCalibration,
+    renderPath: String?,
+    quality: dev.foldphase.engine.ShaderQuality,
+): Map<String, String> {
+    val stats = controller.frameMetrics.snapshot()
+    return linkedMapOf(
+        "render path" to (renderPath ?: "not resolved"),
+        "shader quality" to "${quality.name} (${quality.taps} taps)" +
+            if (controller.adaptiveQuality.hasStepped) " auto-stepped" else "",
+        "calibration" to when {
+            stored.isCalibrated -> "measured via wizard"
+            controller.autoCalibrator.isTrusted -> "provisional (auto-learned)"
+            else -> "none yet"
+        },
+        "range in use" to "${effective.closedAngleDeg.fmt(2)} .. ${effective.openAngleDeg.fmt(2)}",
+        "auto-cal span" to "${controller.autoCalibrator.observedSpan.fmt(2)} deg",
+        "handoff" to if (stored.hasMeasuredHandoff) {
+            "measured p=${stored.measuredHandoffProgress.fmt(3)}"
+        } else {
+            "not observed yet (using fallback)"
+        },
+        "cover aspect" to if (controller.displayProfile.hasCover) {
+            controller.displayProfile.coverAspect.fmt(4)
+        } else {
+            "not seen"
+        },
+        "inner aspect" to if (controller.displayProfile.hasInner) {
+            controller.displayProfile.innerAspect.fmt(4)
+        } else {
+            "not seen"
+        },
+        "cover half" to controller.engine.sceneMapping.coverHalf.name,
+        "fold state" to "${progress.state.name} / ${progress.direction.name}",
+        "active display" to progress.activeDisplay.name,
+        "progress" to progress.progress.fmt(4),
+        "frame avg/P95/P99" to
+            "${stats.averageMs.fmt(2)} / ${stats.p95Ms.fmt(2)} / ${stats.p99Ms.fmt(2)} ms",
+        "effective Hz" to "${stats.effectiveHz.fmt(1)} of ${stats.expectedHz.fmt(1)}",
+        "dropped frames" to "${stats.droppedFrames} / ${stats.totalFrames}",
+    )
 }

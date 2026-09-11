@@ -11,14 +11,26 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * CSV and text export for the diagnostics screen (brief §3, §21).
+ * Diagnostics export for the Sensors screen.
  *
- * Writes into `cacheDir/exports` and returns a `content://` URI via [FileProvider], which
- * is the only way to hand a file to another app on a modern Android release without
- * either `MANAGE_EXTERNAL_STORAGE` or a `FileUriExposedException`.
+ * ## Getting data *out* is the hard part
  *
- * Always off the main thread: this is a diagnostics path, but a diagnostics path that
- * stutters the UI would defeat the purpose of an instrument meant to detect stutter.
+ * Writing a file to `cacheDir/exports` is easy and completely useless on its own: since
+ * Android 11, `Android/data/<pkg>/` is not browsable by file managers, so a report written
+ * there is unreachable on the very device that produced it unless the user has adb — which
+ * is exactly the situation this app is built for people *not* to need.
+ *
+ * So every export is available three ways, in descending order of convenience:
+ *
+ * 1. **[buildSensorReport] returns the text**, so the UI can copy it to the clipboard or
+ *    render it on screen. This is the one that actually works for someone with only a
+ *    phone.
+ * 2. **[shareIntent]** hands it to the system share sheet via [FileProvider], so it can go
+ *    to email, notes, a messaging app — anywhere.
+ * 3. The file on disk, for anyone who does have adb.
+ *
+ * Always off the main thread: a diagnostics path that stutters the UI would defeat the
+ * purpose of an instrument meant to detect stutter.
  */
 class DebugExport(private val context: Context) {
 
@@ -76,7 +88,99 @@ class DebugExport(private val context: Context) {
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val file = File(exportDir, "sensor_report_${timestamp()}.txt")
-            file.bufferedWriter().use { w ->
+            file.writeText(buildSensorReport(inventory, trace, extraNotes))
+            file
+        }
+    }
+
+    /**
+     * Build the report as a string.
+     *
+     * Separate from [exportSensorReport] because the string is the genuinely useful
+     * artefact — it can be copied to the clipboard and pasted straight into a message,
+     * which needs no file access at all.
+     */
+    suspend fun buildSensorReport(
+        inventory: SensorInventory,
+        trace: HingeTrace?,
+        extraNotes: Map<String, String> = emptyMap(),
+    ): String = withContext(Dispatchers.Default) {
+        buildString {
+            reportInto(this, inventory, trace, extraNotes)
+        }
+    }
+
+    /**
+     * A short, pasteable summary — the ~30 lines that actually drive a diagnosis.
+     *
+     * The full report enumerates every sensor on the device and runs to thousands of
+     * characters, which is fine as an attachment and miserable to paste into a message.
+     * This is the version to send first; the full one is there if it turns out to be
+     * needed.
+     */
+    suspend fun buildSummary(
+        inventory: SensorInventory,
+        trace: HingeTrace?,
+        state: Map<String, String> = emptyMap(),
+    ): String = withContext(Dispatchers.Default) {
+        buildString {
+            appendLine("FoldPhase summary — ${Date()}")
+            appendLine("${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
+            appendLine("Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT} / ${Build.DISPLAY}")
+            appendLine()
+
+            val hinge = inventory.hinge
+            if (hinge == null) {
+                appendLine("HINGE SENSOR: NOT FOUND")
+                appendLine("  no TYPE_HINGE_ANGLE (36), no '${SensorInfo.HINGE_ANGLE_STRING_TYPE}',")
+                appendLine("  and no name heuristic match among ${inventory.all.size} sensors")
+            } else {
+                appendLine("HINGE SENSOR: ${hinge.name}")
+                appendLine("  type=${hinge.type} stringType=${hinge.stringType}")
+                appendLine("  vendor=${hinge.vendor} version=${hinge.version}")
+                appendLine("  resolution=${hinge.resolution} maxRange=${hinge.maximumRange}")
+                appendLine("  minDelay=${hinge.minDelayUs}us (${hinge.maxRateHz.format3()} Hz max)")
+                appendLine("  reporting=${hinge.reportingModeLabel} wakeup=${hinge.isWakeUpSensor}")
+                appendLine("  power=${hinge.powerMa} mA")
+                if (inventory.hingeIsHeuristicMatch) {
+                    appendLine("  WARNING: matched by name heuristic, not a standard identifier")
+                }
+            }
+            appendLine()
+
+            if (trace != null && trace.hasObservations) {
+                appendLine("OBSERVED")
+                appendLine("  angle range seen : ${trace.minObservedAngle.format3()} .. ${trace.maxObservedAngle.format3()}")
+                appendLine("  samples          : ${trace.size}")
+                appendLine("  event rate       : ${trace.recentEventRateHz().format3()} Hz recent, ${trace.averageEventRateHz().format3()} Hz avg")
+            } else {
+                appendLine("OBSERVED: no samples recorded yet — move the hinge, then re-copy")
+            }
+            appendLine()
+
+            if (state.isNotEmpty()) {
+                appendLine("APP STATE")
+                state.forEach { (k, v) -> appendLine("  ${k.padEnd(18)}: $v") }
+                appendLine()
+            }
+
+            appendLine("Sensors on device: ${inventory.all.size}")
+            val related = inventory.foldRelated
+            if (related.isNotEmpty()) {
+                appendLine("Fold-related: " + related.joinToString { it.name })
+            }
+        }
+    }
+
+    private fun reportInto(
+        sb: StringBuilder,
+        inventory: SensorInventory,
+        trace: HingeTrace?,
+        extraNotes: Map<String, String>,
+    ) {
+        with(sb) {
+            run {
+                val w = this
                 w.appendLine("FoldPhase sensor report")
                 w.appendLine("Generated: ${Date()}")
                 w.appendLine()
@@ -125,16 +229,41 @@ class DebugExport(private val context: Context) {
                     w.appendLine()
                 }
             }
-            file
         }
     }
 
     /** Convert an exported file to a shareable content URI. */
-    fun shareUri(file: File) = FileProvider.getUriForFile(
+    fun shareUri(file: File): android.net.Uri = FileProvider.getUriForFile(
         context,
         "${context.packageName}.fileprovider",
         file,
     )
+
+    /**
+     * A ready-to-launch share chooser for an exported file.
+     *
+     * `FLAG_GRANT_READ_URI_PERMISSION` is what lets the receiving app actually open the
+     * content URI; without it the share appears to work and the target sees nothing.
+     */
+    fun shareIntent(file: File, mimeType: String = "text/plain"): android.content.Intent {
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(android.content.Intent.EXTRA_STREAM, shareUri(file))
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "FoldPhase diagnostics — ${file.name}")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return android.content.Intent.createChooser(send, "Share diagnostics")
+    }
+
+    /** Share plain text directly, with no file involved at all. */
+    fun shareText(text: String, subject: String): android.content.Intent {
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
+            putExtra(android.content.Intent.EXTRA_SUBJECT, subject)
+        }
+        return android.content.Intent.createChooser(send, subject)
+    }
 
     fun listExports(): List<File> =
         exportDir.listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
