@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.FoldPhase" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!--
+      The launcher window must be transparent so the wallpaper shows through, and it must
+      never show the system's own window animation: an activity transition playing over
+      the fold transition is precisely the "Samsung phone playing an animation" impression
+      the project exists to avoid (brief §33).
+    -->
+    <style name="Theme.FoldPhase.Launcher" parent="Theme.FoldPhase">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowShowWallpaper">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowDisablePreview">true</item>
+    </style>
+</resources>

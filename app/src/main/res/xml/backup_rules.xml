@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Calibration and tuning are device-specific; restoring them onto different
+         hardware would be actively wrong. -->
+    <exclude domain="file" path="datastore/" />
+    <exclude domain="file" path="scene/" />
+</full-backup-content>

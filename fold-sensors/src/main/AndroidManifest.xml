@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Declares the hardware the module is built around. required=false so the APK
+         remains installable on non-foldables, where the app runs in simulator-only mode. -->
+    <uses-feature android:name="android.hardware.sensor.hinge_angle" android:required="false" />
+</manifest>

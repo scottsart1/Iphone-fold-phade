@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Two panels meeting at a fold line. -->
+    <path
+        android:fillColor="#8AB4F8"
+        android:pathData="M30,30 L52,30 L52,78 L30,78 Z" />
+    <path
+        android:fillColor="#4A6FA5"
+        android:pathData="M56,34 L78,30 L78,78 L56,74 Z" />
+    <path
+        android:fillColor="#E4E7EC"
+        android:pathData="M53.2,28 L54.8,28 L54.8,80 L53.2,80 Z" />
+</vector>

@@ -1,0 +1,14 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild
+.cxx
+*.apk.idsig
+
+# The local signing key is a convenience for personal side-loading, not a secret,
+# but it should not be in version control either.
+app/local-release.jks
