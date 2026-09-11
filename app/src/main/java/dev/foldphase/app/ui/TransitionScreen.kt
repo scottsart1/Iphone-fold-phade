@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -72,7 +73,7 @@ fun TransitionScreen(controller: FoldController, modifier: Modifier = Modifier) 
     var sliderProgress by remember { mutableFloatStateOf(0f) }
     var sweepJob by remember { mutableStateOf<Job?>(null) }
     var importMessage by remember { mutableStateOf<String?>(null) }
-    var textureVersion by remember { mutableIntStateOfCompat(0) }
+    var textureVersion by remember { mutableIntStateOf(0) }
 
     val scene = remember { sampleHomeScene() }
 
@@ -83,7 +84,7 @@ fun TransitionScreen(controller: FoldController, modifier: Modifier = Modifier) 
             scope.launch {
                 importMessage = controller.textureCache
                     .import(uri, SceneTextureCache.Slot.COVER)
-                    .fold({ "Cover screenshot imported"; }, { "Import failed: ${it.message}" })
+                    .fold({ "Cover screenshot imported" }, { "Import failed: ${it.message}" })
                 textureVersion++
             }
         }
@@ -155,6 +156,7 @@ fun TransitionScreen(controller: FoldController, modifier: Modifier = Modifier) 
                         LauncherSceneRenderer(
                             scene = scene,
                             visualState = controller.visualState,
+                            sceneMapping = controller.engine.sceneMapping,
                         )
                     }
                 }
@@ -301,6 +303,3 @@ fun TransitionScreen(controller: FoldController, modifier: Modifier = Modifier) 
         }
     }
 }
-
-/** `mutableIntStateOf` shim kept local so the import list stays tidy. */
-private fun mutableIntStateOfCompat(value: Int) = androidx.compose.runtime.mutableIntStateOf(value)

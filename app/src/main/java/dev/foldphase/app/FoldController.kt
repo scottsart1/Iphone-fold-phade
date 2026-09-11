@@ -86,6 +86,9 @@ class FoldController(private val app: Application) {
     /** True if this device actually exposes a hinge angle sensor. */
     val hasHingeSensor: Boolean get() = sensorSource.isAvailable()
 
+    /** Guards the handoff persist against re-writing on every frame. See [onSample]. */
+    private var lastPersistedObservationCount = -1
+
     private val displayManager =
         app.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
 
@@ -130,9 +133,21 @@ class FoldController(private val app: Application) {
 
         // Opportunistically persist a newly learned handoff point so the device gets
         // better at concealing the panel swap the more it is used.
-        val learned = pipeline.handoffLearner.combinedEstimate()
-        if (learned != null && pipeline.handoffLearner.observationCount in 1..MAX_PERSISTED_OBS) {
-            scope.launch { calibrationStore.saveHandoffProgress(learned) }
+        //
+        // Gated on the observation count having actually *changed*. This runs at frame
+        // rate, so an ungated write here would mean ~120 DataStore commits per second
+        // during a fold — file I/O on the animation path, which is precisely what the
+        // performance budget forbids. Observations only arrive on a display change, so in
+        // practice this writes at most a handful of times in the app's lifetime.
+        val observations = pipeline.handoffLearner.observationCount
+        if (observations != lastPersistedObservationCount &&
+            observations in 1..MAX_PERSISTED_OBS
+        ) {
+            lastPersistedObservationCount = observations
+            val learned = pipeline.handoffLearner.combinedEstimate()
+            if (learned != null) {
+                scope.launch { calibrationStore.saveHandoffProgress(learned) }
+            }
         }
     }
 

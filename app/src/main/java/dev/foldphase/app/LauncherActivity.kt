@@ -51,6 +51,7 @@ class LauncherActivity : ComponentActivity() {
                 LauncherSceneRenderer(
                     scene = scene,
                     visualState = controller.visualState,
+                    sceneMapping = controller.engine.sceneMapping,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

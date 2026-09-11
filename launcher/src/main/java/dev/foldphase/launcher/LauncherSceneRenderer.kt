@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.toArgb
 import dev.foldphase.core.Curves
+import dev.foldphase.core.SceneMapping
 import dev.foldphase.engine.FoldVisualState
 
 /**
@@ -44,6 +45,7 @@ fun LauncherSceneRenderer(
     scene: HomeScene,
     visualState: State<FoldVisualState>,
     modifier: Modifier = Modifier,
+    sceneMapping: SceneMapping = SceneMapping.Z_FOLD_7_DEFAULT,
     coverSpec: GridSpec = GridSpec.COVER,
     innerSpec: GridSpec = GridSpec.INNER,
 ) {
@@ -56,13 +58,18 @@ fun LauncherSceneRenderer(
         HomeSceneLayout.layoutPage(scene, innerSpec) to HomeSceneLayout.layoutDock(scene, innerSpec)
     }
 
-    val interpolator = remember(coverLayout, innerLayout) {
+    val interpolator = remember(coverLayout, innerLayout, sceneMapping) {
         LauncherSceneInterpolator(
             coverItems = coverLayout.first,
             innerItems = innerLayout.first,
             coverDock = coverLayout.second,
             innerDock = innerLayout.second,
-        )
+        ).apply {
+            // Without these the blend below would divide by a placeholder span and the
+            // icons would start part-way toward the inner layout at p = 0.
+            coverViewportWidth = sceneMapping.coverSceneRect.width
+            viewportSpan = sceneMapping.innerSceneRect.width - sceneMapping.coverSceneRect.width
+        }
     }
 
     Box(
@@ -186,9 +193,18 @@ internal class LauncherSceneInterpolator(
     private val itemPairs = pair(coverItems, innerItems)
     private val dockPairs = pair(coverDock, innerDock)
 
-    /** Cached so the renderer can express blend as a function of viewport width. */
+    /**
+     * The viewport width at fold progress 0, i.e. the cover display's native crop.
+     *
+     * Set by the renderer from the scene mapping. Together with [viewportSpan] this lets
+     * the icon blend be expressed as "how far has the viewport travelled", which keeps
+     * icon motion locked to the scene expansion the shader is performing rather than
+     * running on a second, independently-eased timeline.
+     */
     var coverViewportWidth: Float = 0f
-    var viewportSpan: Float = 1f
+
+    /** `innerWidth - coverWidth`. Zero or negative falls back to raw progress. */
+    var viewportSpan: Float = 0f
 
     private fun pair(
         cover: List<ItemPlacement>,

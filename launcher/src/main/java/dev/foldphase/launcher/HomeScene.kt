@@ -55,18 +55,30 @@ data class HomePage(
 /**
  * One thing on the home screen.
  *
- * Position is stored in **grid cells**, not pixels, which is the whole point: the cover
- * layout and the inner layout have different grid dimensions, so a pixel position would
- * have to be recomputed (and would therefore jump), whereas a cell position maps cleanly
- * into both.
+ * ## Position is an *order*, not a coordinate
+ *
+ * The cover grid is 4 columns and the inner grid is 6. A single stored `(column, row)`
+ * cannot describe a position in both — an item pinned to column 3 would sit against the
+ * right edge of the cover grid and two columns short of the right edge of the inner one,
+ * so the icons would bunch into the left two-thirds of the unfolded display instead of
+ * using it.
+ *
+ * So ordinary items store only their **order within the page**, and each [GridSpec]
+ * reflows them into its own grid — which is also what a real launcher does when its grid
+ * size changes. Going from 4 to 6 columns then makes items genuinely *spread apart*
+ * during the unfold rather than merely growing, which is the motion the reference
+ * animation's "flows across displays" describes.
+ *
+ * Widgets are the exception: they occupy a specific region, so they keep explicit
+ * [column]/[row] placement and are dropped from a grid they do not fit.
  */
 data class HomeItem(
     val id: String,
     val label: String,
     val kind: ItemKind = ItemKind.APP,
-    /** Column in the grid, 0-based. */
+    /** Explicit column, honoured for widgets only. Ordinary items reflow by order. */
     val column: Int = 0,
-    /** Row in the grid, 0-based. */
+    /** Explicit row, honoured for widgets only. Ordinary items reflow by order. */
     val row: Int = 0,
     /** Cells spanned. Widgets span more than one; apps and folders are always 1x1. */
     val columnSpan: Int = 1,
@@ -169,18 +181,42 @@ object HomeSceneLayout {
         val cellW = usableW / spec.columns
         val cellH = usableH / spec.rows
 
-        return page.items.mapNotNull { item ->
-            if (item.column >= spec.columns || item.row >= spec.rows) return@mapNotNull null
+        val out = ArrayList<ItemPlacement>(page.items.size)
+        // Flow position for reflowable items, advanced independently of the list index so
+        // that an explicitly-placed widget does not shift everything after it.
+        var slot = 0
+
+        page.items.forEach { item ->
+            val column: Int
+            val row: Int
+
+            if (item.isWidget) {
+                // Widgets occupy a region, so they keep their explicit placement and are
+                // dropped from a grid too small to hold them.
+                column = item.column
+                row = item.row
+                if (column + item.columnSpan > spec.columns) return@forEach
+                if (row + item.rowSpan > spec.rows) return@forEach
+            } else {
+                column = slot % spec.columns
+                row = slot / spec.columns
+                slot++
+                if (row >= spec.rows) return@forEach
+            }
+
             val w = cellW * item.columnSpan
             val h = cellH * item.rowSpan
-            ItemPlacement(
-                item = item,
-                centerX = padX + item.column * cellW + w * 0.5f,
-                centerY = padY + item.row * cellH + h * 0.5f,
-                width = w,
-                height = h,
+            out.add(
+                ItemPlacement(
+                    item = item,
+                    centerX = padX + column * cellW + w * 0.5f,
+                    centerY = padY + row * cellH + h * 0.5f,
+                    width = w,
+                    height = h,
+                ),
             )
         }
+        return out
     }
 
     fun layoutDock(scene: HomeScene, spec: GridSpec): List<ItemPlacement> {
