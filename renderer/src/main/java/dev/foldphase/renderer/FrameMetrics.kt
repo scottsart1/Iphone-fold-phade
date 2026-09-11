@@ -40,6 +40,18 @@ class FrameMetrics(private val capacity: Int = 240) {
         totalFrames = 0L
     }
 
+    /**
+     * Note that the frame loop has stopped, so the next interval is not a frame time.
+     *
+     * Without this, the gap across an idle period is recorded as one enormous frame and
+     * poisons the percentiles: a device sitting still for two seconds would report a
+     * 2000 ms frame. Since the loop deliberately stops when the hinge is still
+     * (see `FoldPipeline`), that happens constantly.
+     */
+    fun markIdle() {
+        lastFrameNanos = 0L
+    }
+
     fun record(frameTimeNanos: Long) {
         totalFrames++
         if (lastFrameNanos != 0L) {

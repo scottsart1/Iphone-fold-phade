@@ -24,6 +24,8 @@ import dev.foldphase.sensors.FilterConfig
 import dev.foldphase.sensors.FoldPipeline
 import dev.foldphase.sensors.HingeAngleSensorSource
 import dev.foldphase.sensors.HingeCalibration
+import dev.foldphase.sensors.ProbeStats
+import dev.foldphase.sensors.SensorProbe
 import dev.foldphase.sensors.VirtualHingeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +80,18 @@ class FoldController(private val app: Application) {
     /** Steps shader quality down if the device cannot hold its frame budget. */
     val adaptiveQuality = AdaptiveQuality()
 
+    /**
+     * Watches every candidate hinge sensor so the usable one can be chosen by evidence.
+     *
+     * Necessary because the Fold 7's standard hinge sensor declares a resolution that, if
+     * accurate, makes it unusable for a scrubbed animation — and the device exposes
+     * several vendor alternatives. See [SensorProbe].
+     */
+    val sensorProbe = SensorProbe(app)
+
+    /** The sensor currently driving the pipeline. Null means the platform default. */
+    private var selectedSensor: android.hardware.Sensor? = null
+
     private val _tuning = MutableStateFlow(FoldTuningPresets.APPLE_LIKE)
     val tuning: StateFlow<FoldTuning> = _tuning.asStateFlow()
 
@@ -101,6 +115,10 @@ class FoldController(private val app: Application) {
     /** Which render path the surface resolved to, for the diagnostics screen. */
     private val _renderPath = MutableStateFlow<String?>(null)
     val renderPath: StateFlow<String?> = _renderPath.asStateFlow()
+
+    /** Name of the sensor driving the pipeline, for diagnostics. */
+    private val _activeSensorName = MutableStateFlow<String?>(null)
+    val activeSensorName: StateFlow<String?> = _activeSensorName.asStateFlow()
 
     /**
      * The live visual state, as a Compose [MutableState] rather than a Flow.
@@ -177,7 +195,15 @@ class FoldController(private val app: Application) {
             dir = sample.direction,
             foldState = sample.state,
         )
-        frameMetrics.record(sample.timestampNanos)
+        // Only record while the frame loop is genuinely running. The pipeline stops when
+        // the hinge is still and restarts when it moves, so recording unconditionally
+        // measured the idle gaps between transitions and reported them as frame times —
+        // which is how a stationary device came back claiming 24 ms average frames.
+        if (pipeline.isAnimating.value && sample.state.isMoving) {
+            frameMetrics.record(sample.timestampNanos)
+        } else {
+            frameMetrics.markIdle()
+        }
 
         // Judge frame health only occasionally: snapshot() sorts the ring buffer, which is
         // far too expensive to do on every frame of the thing it is measuring.
@@ -235,11 +261,55 @@ class FoldController(private val app: Application) {
     fun useRealSensor() {
         _usingVirtualHinge.value = false
         pipeline.resetFilters()
-        if (sensorSource.isAvailable()) {
-            pipeline.attach(sensorSource)
+        val source = currentSensorSource()
+        if (source != null && source.isAvailable()) {
+            pipeline.attach(source)
+            _activeSensorName.value = source.sensor?.name
         } else {
             pipeline.attach(virtualSource)
+            _activeSensorName.value = null
         }
+    }
+
+    private var activeSensorSource: HingeAngleSensorSource? = null
+
+    private fun currentSensorSource(): HingeAngleSensorSource? {
+        val chosen = selectedSensor
+        if (chosen == null) {
+            activeSensorSource = sensorSource
+            return sensorSource
+        }
+        val existing = activeSensorSource
+        if (existing != null && existing.sensor?.type == chosen.type) return existing
+        return HingeAngleSensorSource(app, chosen).also { activeSensorSource = it }
+    }
+
+    /**
+     * Switch which sensor drives the pipeline.
+     *
+     * Re-scales the auto-calibrator's guard rails to the new sensor's declared range,
+     * because a vendor sensor may report a normalised `0 … 1` rather than degrees, and
+     * clears the learned range — a calibration in one unit is meaningless in another.
+     */
+    fun selectSensor(sensor: android.hardware.Sensor?) {
+        selectedSensor = sensor
+        autoCalibrator.reset()
+        sensor?.let { autoCalibrator.configureForRange(it.maximumRange) }
+        scope.launch { calibrationStore.clear() }
+        pipeline.resetFilters()
+        useRealSensor()
+    }
+
+    /** The sensor the pipeline is reading, or null when on the simulator. */
+    fun currentSensor(): android.hardware.Sensor? = activeSensorSource?.sensor
+
+    /** Adopt the probe's best-evidenced continuous candidate, if there is one. */
+    fun adoptBestProbedSensor(): ProbeStats? {
+        val best = sensorProbe.bestCandidate() ?: return null
+        val sensor = sensorProbe.candidates.firstOrNull { it.type == best.sensorType }
+            ?: return null
+        selectSensor(sensor)
+        return best
     }
 
     /** Switch to the virtual hinge (brief §27). Identical code path below this point. */

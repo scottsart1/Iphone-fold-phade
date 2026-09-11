@@ -30,7 +30,34 @@ import dev.foldphase.core.Curves
  *   range and it cannot oscillate.
  * - An explicit wizard calibration always wins. This never overwrites one.
  */
-class AutoCalibrator {
+class AutoCalibrator(
+    /**
+     * Span that counts as "enough of the range seen", in the sensor's own units.
+     *
+     * Not fixed at 60 degrees any more: a vendor fold sensor may report a normalised
+     * `0 … 1`, where 60 would be unreachable and the range would never be trusted. The
+     * caller sets this from the selected sensor's declared maximum range.
+     */
+    private var minTrustedSpan: Float = MIN_TRUSTED_SPAN_DEG,
+    /** Readings outside this are treated as sensor faults, in the sensor's own units. */
+    private var plausibleMin: Float = ABSOLUTE_MIN_DEG,
+    private var plausibleMax: Float = ABSOLUTE_MAX_DEG,
+) {
+
+    /**
+     * Re-scale the guard rails for a sensor reporting in units other than degrees.
+     *
+     * @param maxRange the sensor's declared `maximumRange`
+     */
+    fun configureForRange(maxRange: Float) {
+        if (!maxRange.isFinite() || maxRange <= 0f) return
+        // A third of the declared range, matching the 60-of-180 ratio the degree default
+        // encodes, so the trust threshold means the same thing in any unit.
+        minTrustedSpan = maxRange / 3f
+        val margin = maxRange * 0.12f
+        plausibleMin = -margin
+        plausibleMax = maxRange + margin
+    }
 
     var observedMin: Float = Float.POSITIVE_INFINITY
         private set
@@ -47,7 +74,7 @@ class AutoCalibrator {
         if (!angleDeg.isFinite()) return false
         // Reject readings far outside any plausible hinge range before they can poison
         // the extremes; a single bad value would otherwise stretch the span permanently.
-        if (angleDeg < ABSOLUTE_MIN_DEG || angleDeg > ABSOLUTE_MAX_DEG) return false
+        if (angleDeg < plausibleMin || angleDeg > plausibleMax) return false
 
         sampleCount++
         var changed = false
@@ -72,7 +99,7 @@ class AutoCalibrator {
 
     /** Whether enough of the range has been seen to prefer this over the fallback. */
     val isTrusted: Boolean
-        get() = observedSpan >= MIN_TRUSTED_SPAN_DEG
+        get() = observedSpan >= minTrustedSpan
 
     /**
      * Fold [stored] with what has been observed.
@@ -102,12 +129,12 @@ class AutoCalibrator {
 
     /** Seed from a stored provisional range so a restart does not start blind. */
     fun seed(minDeg: Float, maxDeg: Float) {
-        if (minDeg.isFinite() && minDeg >= ABSOLUTE_MIN_DEG) observedMin = minDeg
-        if (maxDeg.isFinite() && maxDeg <= ABSOLUTE_MAX_DEG) observedMax = maxDeg
+        if (minDeg.isFinite() && minDeg >= plausibleMin) observedMin = minDeg
+        if (maxDeg.isFinite() && maxDeg <= plausibleMax) observedMax = maxDeg
     }
 
     /** Fraction of a plausible full range seen so far, for a progress readout. */
-    fun coverage(): Float = Curves.clamp(observedSpan / TYPICAL_FULL_SPAN_DEG)
+    fun coverage(): Float = Curves.clamp(observedSpan / (minTrustedSpan * 3f))
 
     companion object {
         /**

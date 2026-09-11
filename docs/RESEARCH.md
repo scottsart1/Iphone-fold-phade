@@ -130,7 +130,17 @@ transition. This project is honest about that boundary rather than pretending ot
   read *above* 180. The closed end is often not exactly 0 either.
   → Hence the calibration wizard (`fold-sensors/Calibration.kt`) is mandatory, and the
   whole engine runs on normalized progress.
-- Non-wakeup on Samsung hardware, so it does not deliver while the CPU is asleep.
+- **Correction from hardware (2026-09-11, SM-F966U):** it is a **wake-up** sensor on the
+  Galaxy Z Fold 7, not non-wakeup as originally assumed here.
+- **Also from hardware, and far more consequential:** the Fold 7 declares
+  `resolution = 90.0` over a `0 … 180` range. Read literally that is three reportable
+  values, which would make a continuously-scrubbed animation impossible from this sensor.
+  Declared resolution is not trustworthy — vendor HALs often fill it with a placeholder —
+  so the app now ships a `SensorProbe` that counts the distinct values each candidate
+  sensor actually emits during a fold, and lets the usable one be chosen on evidence. The
+  same device exposes three Samsung fold sensors (`folding_angle` 65686,
+  `folding_state`/`lid_angle_fusion` 65695, `folding_state_lpm` 65697) declaring `0.01`
+  resolution, which are the fallbacks if the standard sensor really is quantised.
 
 ### 3.2 Jetpack WindowManager
 

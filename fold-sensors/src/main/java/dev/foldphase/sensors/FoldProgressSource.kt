@@ -34,18 +34,35 @@ interface FoldProgressSource {
 }
 
 /**
- * The real `TYPE_HINGE_ANGLE` sensor.
+ * A hardware hinge-angle source.
  *
- * Notes that matter (research §3.1):
- * - The sensor is **on-change**. It fires when the angle changes and goes completely
- *   silent when the hinge is still, so the requested sampling period is an upper bound on
- *   latency, not a promise of a steady rate. Nothing downstream may assume a fixed rate.
- * - It is **non-wakeup** on Samsung hardware, so it delivers nothing while suspended.
- * - `values[0]` is degrees, on a device-defined scale that is *not* guaranteed to be
- *   0–180. That is the calibration wizard's problem, not this class's.
+ * ## Why the sensor is a parameter
+ *
+ * This defaulted to `TYPE_HINGE_ANGLE` and hard-coded it. On the Galaxy Z Fold 7
+ * (SM-F966U) that sensor declares `resolution = 90.0` over a `0 … 180` range, which read
+ * literally means three reportable values — useless for scrubbing an animation. The same
+ * device exposes several Samsung-specific fold sensors declaring far finer resolution.
+ *
+ * Which one actually delivers continuous data is an empirical question, answered by
+ * [SensorProbe] on the device rather than guessed here. So the sensor is injected, and the
+ * app can switch source without a rebuild.
+ *
+ * ## Notes that matter
+ *
+ * - The sensor is **on-change**. It fires when the angle changes and goes silent when the
+ *   hinge is still, so the requested sampling period is an upper bound on latency, not a
+ *   promise of a steady rate. Nothing downstream may assume a fixed rate.
+ * - Wake-up behaviour is per-device. On the Fold 7 the hinge sensor *is* a wake-up sensor,
+ *   contrary to what is often assumed.
+ * - `values[0]` is in whatever unit the sensor chooses — degrees for the standard one, but
+ *   possibly a normalised `0 … 1` for a vendor sensor. That is deliberately not this
+ *   class's problem: [HingeCalibration] normalises whatever range it is handed, so the
+ *   pipeline is unit-agnostic.
  */
 class HingeAngleSensorSource(
     context: Context,
+    /** The sensor to read. Defaults to the standard hinge sensor when present. */
+    sensor: Sensor? = null,
     /** Requested sampling period. `SENSOR_DELAY_FASTEST` for the lowest latency. */
     private val samplingPeriodUs: Int = SensorManager.SENSOR_DELAY_FASTEST,
 ) : FoldProgressSource, SensorEventListener {
@@ -55,8 +72,8 @@ class HingeAngleSensorSource(
 
     private val timeBase = TimeBase()
 
-    /** The hinge sensor, or null on a non-foldable. */
-    val sensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
+    /** The sensor being read, or null if none is available. */
+    val sensor: Sensor? = sensor ?: sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
 
     override val kind: ProgressSourceKind = ProgressSourceKind.SENSOR
 
@@ -96,7 +113,8 @@ class HingeAngleSensorSource(
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type != Sensor.TYPE_HINGE_ANGLE) return
+        // Match the sensor we actually registered; a vendor fold sensor has its own type.
+        if (event.sensor.type != sensor?.type) return
         // Keep this callback as cheap as possible (brief §22): convert the clock, publish,
         // return. No filtering, no state machine, no allocation beyond the sample itself.
         val nanos = timeBase.toFrameClockSafe(event.timestamp)
