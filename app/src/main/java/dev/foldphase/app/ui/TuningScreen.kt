@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.foldphase.app.FoldController
+import dev.foldphase.core.CoverHalf
 import dev.foldphase.engine.FoldTuningPresets
 import dev.foldphase.engine.ShaderQuality
 import dev.foldphase.sensors.FilterConfig
@@ -45,7 +46,8 @@ fun TuningScreen(controller: FoldController, modifier: Modifier = Modifier) {
     val tuning by controller.tuning.collectAsStateWithLifecycle()
     val progress by controller.progress.collectAsStateWithLifecycle()
     val usingVirtual by controller.usingVirtualHinge.collectAsStateWithLifecycle()
-    val calibration by controller.calibration.collectAsStateWithLifecycle()
+    val calibration by controller.effectiveCalibration.collectAsStateWithLifecycle()
+    val activeQuality by controller.activeQuality.collectAsStateWithLifecycle()
 
     var filter by remember { mutableStateOf(FilterConfig()) }
     var presetName by remember { mutableStateOf("Apple-like (default)") }
@@ -230,17 +232,53 @@ fun TuningScreen(controller: FoldController, modifier: Modifier = Modifier) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ShaderQuality.entries.forEach { q ->
                         FilterChip(
-                            selected = tuning.shaderQuality == q,
-                            onClick = { controller.updateTuning(tuning.copy(shaderQuality = q)) },
+                            selected = activeQuality == q,
+                            onClick = { controller.setShaderQuality(q) },
                             label = { Text("${q.name} (${q.taps} taps)") },
                         )
                     }
                 }
                 Text(
-                    "Tap count is the dominant cost of the effect. Drop to LOW if the " +
-                        "frame-time readout above shows P99 above your frame budget.",
+                    if (controller.adaptiveQuality.hasStepped) {
+                        "Quality was stepped down automatically because P95 frame time " +
+                            "exceeded the budget. Picking a level here overrides that."
+                    } else {
+                        "Left alone, the app steps this down by itself if it cannot hold " +
+                            "the frame budget. Picking a level here takes manual control."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
+
+        item {
+            SectionCard("Device geometry") {
+                Text(
+                    "Which half the cover display sits behind is a property of the " +
+                        "chassis that no Android API reports. If the effect looks " +
+                        "mirrored — content emerging from the wrong edge — flip this.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    CoverHalf.entries.forEach { half ->
+                        FilterChip(
+                            selected = controller.engine.sceneMapping.coverHalf == half,
+                            onClick = { controller.setCoverHalf(half) },
+                            label = { Text("Cover on ${half.name.lowercase()} half") },
+                        )
+                    }
+                }
+                Readout(
+                    "Panel aspects",
+                    if (controller.displayProfile.isComplete) {
+                        "measured on this device"
+                    } else {
+                        "partly using Z Fold 7 defaults"
+                    },
                 )
             }
         }

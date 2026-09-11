@@ -46,7 +46,10 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
     val inventory = remember { SensorInventory(context) }
     val exporter = remember { DebugExport(context) }
     val progress by controller.progress.collectAsStateWithLifecycle()
-    val calibration by controller.calibration.collectAsStateWithLifecycle()
+    val calibration by controller.effectiveCalibration.collectAsStateWithLifecycle()
+    val storedCalibration by controller.calibration.collectAsStateWithLifecycle()
+    val renderPath by controller.renderPath.collectAsStateWithLifecycle()
+    val activeQuality by controller.activeQuality.collectAsStateWithLifecycle()
 
     var exportMessage by remember { mutableStateOf<String?>(null) }
 
@@ -78,7 +81,14 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
                 Readout("Fold state", progress.state.name)
                 Readout("Active display", progress.activeDisplay.name)
                 Readout("Source", progress.source.name)
-                Readout("Calibrated", if (progress.calibrated) "yes" else "NO — run calibration")
+                Readout(
+                    "Calibration",
+                    when {
+                        storedCalibration.isCalibrated -> "measured (wizard)"
+                        controller.autoCalibrator.isTrusted -> "provisional (auto-learned)"
+                        else -> "none yet — fold fully once, or run the wizard"
+                    },
+                )
             }
         }
 
@@ -132,6 +142,53 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
                     } else {
                         "not yet observed"
                     },
+                )
+            }
+        }
+
+        // ---- Render path --------------------------------------------------------
+        item {
+            SectionCard("Rendering") {
+                Readout("Path", renderPath ?: "not yet resolved")
+                Readout("Shader quality", "${activeQuality.name} (${activeQuality.taps} taps)")
+                Readout(
+                    "Quality chosen by",
+                    if (controller.adaptiveQuality.hasStepped) {
+                        "app — stepped down to hold frame budget"
+                    } else {
+                        "default or manual"
+                    },
+                )
+                if (renderPath?.startsWith("FALLBACK") == true) {
+                    Text(
+                        "The AGSL shader did not compile on this device, so the " +
+                            "platform-only fallback is running. The effect still tracks " +
+                            "the hinge, but the blur is uniform rather than concentrated " +
+                            "at the fold. The reason is shown above — please report it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                Readout(
+                    "Cover panel aspect",
+                    if (controller.displayProfile.hasCover) {
+                        controller.displayProfile.coverAspect.fmt(4)
+                    } else {
+                        "not seen yet"
+                    },
+                )
+                Readout(
+                    "Inner panel aspect",
+                    if (controller.displayProfile.hasInner) {
+                        controller.displayProfile.innerAspect.fmt(4)
+                    } else {
+                        "not seen yet"
+                    },
+                )
+                Readout(
+                    "Scene mapping",
+                    if (controller.displayProfile.isComplete) "measured" else "partly default",
                 )
             }
         }

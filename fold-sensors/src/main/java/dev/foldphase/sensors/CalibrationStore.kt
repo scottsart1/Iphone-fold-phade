@@ -65,6 +65,24 @@ class CalibrationStore(private val context: Context) {
         context.calibrationDataStore.edit { prefs -> prefs[KEY_HANDOFF] = progress }
     }
 
+    /**
+     * Persist only the passively-observed range, leaving `isCalibrated` false.
+     *
+     * Kept separate from [save] so an inferred range can never be mistaken for one the
+     * user measured deliberately in the wizard.
+     */
+    suspend fun saveProvisionalRange(closedDeg: Float, openDeg: Float) {
+        if (!closedDeg.isFinite() || !openDeg.isFinite()) return
+        if (openDeg - closedDeg < HingeCalibration.MIN_SPAN) return
+        context.calibrationDataStore.edit { prefs ->
+            // Never downgrade a real calibration to a provisional one.
+            if (prefs[KEY_CALIBRATED] == true) return@edit
+            prefs[KEY_CLOSED] = closedDeg
+            prefs[KEY_OPEN] = openDeg
+            prefs[KEY_CALIBRATED] = false
+        }
+    }
+
     suspend fun clear() {
         context.calibrationDataStore.edit { it.clear() }
     }

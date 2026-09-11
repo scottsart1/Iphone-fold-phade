@@ -14,20 +14,51 @@ Your hand is the scrubber.
 
 ---
 
+## Install it without a computer
+
+A signed, prebuilt APK is committed at **[`dist/foldphase-release.apk`](dist/foldphase-release.apk)** (2.4 MB).
+
+Open this repo on the phone, go to `dist/`, tap the file, **Download raw file**, then open
+it from Downloads. No Android Studio, no adb, no laptop.
+
+Full walkthrough, including what to check on first run and what to do if something looks
+wrong: **[`docs/INSTALL.md`](docs/INSTALL.md)**.
+
+**You do not need to run the calibration wizard.** Just fold the phone fully open and shut
+twice — the app learns your hinge range, your device's panel-swap point, and both panels'
+real geometry on its own. The wizard is more precise and worth doing eventually, but it is
+not a prerequisite.
+
+---
+
 ## Status, honestly
 
 | | |
 | --- | --- |
 | `./gradlew assembleDebug` | ✅ passes, **0 warnings** |
 | `./gradlew assembleRelease` | ✅ passes, minified + signed (2.4 MB) |
-| `./gradlew test` | ✅ 50 tests pass |
+| `./gradlew test` | ✅ 76 tests pass |
 | Verified on a physical Z Fold 7 | ❌ **not yet** — no device in the build environment |
 
 The code was written and built in a Linux container with no foldable attached. Everything
 that can be verified without hardware has been. What that leaves open — shader driver
 compatibility, real frame timings, the device's actual hinge characteristics — is listed
-precisely in [`docs/LIMITATIONS.md` §9](docs/LIMITATIONS.md). Expect a calibration pass
-and some curve tuning on first run; that is what the tuning screen is for.
+precisely in [`docs/LIMITATIONS.md` §9](docs/LIMITATIONS.md).
+
+Because neither of us can run an on-device tuning loop, **the app adapts instead of relying
+on you to tune it**:
+
+| Unknown | How the app handles it |
+| --- | --- |
+| Your hinge's real range | Learned passively from use — no wizard required |
+| Where your device swaps panels | Measured by watching its own display changes |
+| Both panels' real geometry | Measured from actual window metrics, not my Z Fold 7 guesses |
+| Whether 13 taps holds 120 Hz | Steps quality down by itself on sustained missed frames |
+| Whether the shader compiles at all | Falls back to a platform-only renderer; never crashes |
+
+The one thing it genuinely cannot guess is **which half the cover display sits behind** —
+no Android API reports it. If the effect looks mirrored, flip it in
+**Tuning → Device geometry**. It is a coin-flip, and it is one tap.
 
 ---
 

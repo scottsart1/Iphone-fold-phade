@@ -14,9 +14,12 @@ import dev.foldphase.engine.FoldAnimationEngine
 import dev.foldphase.engine.FoldTuning
 import dev.foldphase.engine.FoldTuningPresets
 import dev.foldphase.engine.FoldVisualState
+import dev.foldphase.renderer.AdaptiveQuality
 import dev.foldphase.renderer.FrameMetrics
 import dev.foldphase.renderer.SceneTextureCache
+import dev.foldphase.sensors.AutoCalibrator
 import dev.foldphase.sensors.CalibrationStore
+import dev.foldphase.sensors.DisplayProfile
 import dev.foldphase.sensors.FilterConfig
 import dev.foldphase.sensors.FoldPipeline
 import dev.foldphase.sensors.HingeAngleSensorSource
@@ -62,6 +65,19 @@ class FoldController(private val app: Application) {
     private val sensorSource by lazy { HingeAngleSensorSource(app) }
     val virtualSource = VirtualHingeSource()
 
+    /**
+     * Learns the hinge range from ordinary use, so the app is usable before — or without —
+     * the calibration wizard. An explicit wizard calibration always wins; see
+     * [AutoCalibrator].
+     */
+    val autoCalibrator = AutoCalibrator()
+
+    /** Learns both panels' real window aspects, so the scene mapping is measured. */
+    val displayProfile = DisplayProfile()
+
+    /** Steps shader quality down if the device cannot hold its frame budget. */
+    val adaptiveQuality = AdaptiveQuality()
+
     private val _tuning = MutableStateFlow(FoldTuningPresets.APPLE_LIKE)
     val tuning: StateFlow<FoldTuning> = _tuning.asStateFlow()
 
@@ -70,6 +86,21 @@ class FoldController(private val app: Application) {
 
     private val _usingVirtualHinge = MutableStateFlow(false)
     val usingVirtualHinge: StateFlow<Boolean> = _usingVirtualHinge.asStateFlow()
+
+    /**
+     * The calibration actually in force: the stored one if the wizard has been run,
+     * otherwise the provisional range inferred from observation.
+     */
+    private val _effectiveCalibration = MutableStateFlow(HingeCalibration.UNCALIBRATED)
+    val effectiveCalibration: StateFlow<HingeCalibration> = _effectiveCalibration.asStateFlow()
+
+    /** Shader quality currently in use, after any automatic step-down. */
+    private val _activeQuality = MutableStateFlow(adaptiveQuality.current)
+    val activeQuality: StateFlow<dev.foldphase.engine.ShaderQuality> = _activeQuality.asStateFlow()
+
+    /** Which render path the surface resolved to, for the diagnostics screen. */
+    private val _renderPath = MutableStateFlow<String?>(null)
+    val renderPath: StateFlow<String?> = _renderPath.asStateFlow()
 
     /**
      * The live visual state, as a Compose [MutableState] rather than a Flow.
@@ -96,7 +127,12 @@ class FoldController(private val app: Application) {
         scope.launch {
             calibrationStore.calibration.collect { stored ->
                 _calibration.value = stored
-                pipeline.calibration = stored
+                // Seed the auto-calibrator from whatever range was last persisted, so a
+                // fresh process is not blind until the user happens to fold fully.
+                if (!stored.isCalibrated) {
+                    autoCalibrator.seed(stored.closedAngleDeg, stored.openAngleDeg)
+                }
+                applyEffectiveCalibration(stored)
                 if (stored.hasMeasuredHandoff) {
                     pipeline.handoffCenterFallback = stored.measuredHandoffProgress
                 }
@@ -114,6 +150,18 @@ class FoldController(private val app: Application) {
     }
 
     private fun onSample(sample: FoldProgress) {
+        // Widen the provisional range from what the sensor actually reports. Only a real
+        // widening past the trust threshold triggers the (rare) recompute and write.
+        if (autoCalibrator.observe(sample.rawAngleDeg) && !_calibration.value.isCalibrated) {
+            applyEffectiveCalibration(_calibration.value)
+            scope.launch {
+                calibrationStore.saveProvisionalRange(
+                    autoCalibrator.observedMin,
+                    autoCalibrator.observedMax,
+                )
+            }
+        }
+
         val center = pipeline.handoffLearner.estimate(
             opening = sample.velocityDegPerSec >= 0f,
         ) ?: _tuning.value.handoffCenterFallback
@@ -130,6 +178,14 @@ class FoldController(private val app: Application) {
             foldState = sample.state,
         )
         frameMetrics.record(sample.timestampNanos)
+
+        // Judge frame health only occasionally: snapshot() sorts the ring buffer, which is
+        // far too expensive to do on every frame of the thing it is measuring.
+        if (frameCheckCountdown-- <= 0) {
+            frameCheckCountdown = FRAME_CHECK_INTERVAL
+            val chosen = adaptiveQuality.update(frameMetrics.snapshot())
+            if (chosen != _activeQuality.value) _activeQuality.value = chosen
+        }
 
         // Opportunistically persist a newly learned handoff point so the device gets
         // better at concealing the panel swap the more it is used.
@@ -149,6 +205,30 @@ class FoldController(private val app: Application) {
                 scope.launch { calibrationStore.saveHandoffProgress(learned) }
             }
         }
+    }
+
+    /**
+     * Recompute which calibration is in force and push it into the pipeline.
+     *
+     * A wizard calibration is used verbatim. Otherwise the provisional range is used, but
+     * still reported with `isCalibrated = false` so the UI keeps saying so.
+     */
+    private fun applyEffectiveCalibration(stored: HingeCalibration) {
+        val effective = autoCalibrator.refine(stored)
+        _effectiveCalibration.value = effective
+        pipeline.calibration = effective
+    }
+
+    /** Record the render path the surface resolved to, for diagnostics. */
+    fun reportRenderPath(path: String, detail: String?) {
+        _renderPath.value = if (detail.isNullOrBlank()) path else "$path — $detail"
+    }
+
+    /** Manual quality override from the tuning panel; disables automatic stepping. */
+    fun setShaderQuality(quality: dev.foldphase.engine.ShaderQuality) {
+        adaptiveQuality.set(quality)
+        _activeQuality.value = quality
+        updateTuning(_tuning.value.copy(shaderQuality = quality))
     }
 
     /** Attach the real hinge sensor, or the simulator if there is no hinge. */
@@ -206,6 +286,20 @@ class FoldController(private val app: Application) {
      */
     fun reportDisplay(display: Display?) {
         val d = display ?: return
+
+        // Feed the profile from the panel's real size, so the scene mapping comes from
+        // this device's actual geometry rather than published Z Fold 7 numbers.
+        val size = android.graphics.Point()
+        @Suppress("DEPRECATION")
+        d.getRealSize(size)
+        if (displayProfile.observe(size.x, size.y)) {
+            engine.sceneMapping = displayProfile.deriveMapping(
+                coverHalf = engine.sceneMapping.coverHalf,
+                hingeAxis = engine.sceneMapping.hingeAxis,
+                hingePosition = engine.sceneMapping.hingePosition,
+            )
+        }
+
         // The inner panel is the larger one. Comparing against the default display id is
         // not reliable on Samsung hardware — both panels can present as the default at
         // different times — so classify by size, which is unambiguous.
@@ -236,12 +330,25 @@ class FoldController(private val app: Application) {
         return largest.displayId == display.displayId
     }
 
-    /** Recompute the scene mapping from the running display's real metrics. */
+    /** Override the observed panel aspects, then rebuild the mapping from them. */
     fun deriveSceneMappingFrom(coverAspect: Float, innerAspect: Float) {
-        engine.sceneMapping = SceneMapping.fromAspectRatios(
-            coverAspect = coverAspect,
-            innerAspect = innerAspect,
+        displayProfile.seed(coverAspect, innerAspect)
+        engine.sceneMapping = displayProfile.deriveMapping(
+            coverHalf = engine.sceneMapping.coverHalf,
+            hingeAxis = engine.sceneMapping.hingeAxis,
+            hingePosition = engine.sceneMapping.hingePosition,
         )
+    }
+
+    /**
+     * Flip which physical half the cover display sits behind.
+     *
+     * This is a property of the chassis that no API reports, so if the effect looks
+     * mirrored on a given device this is the fix — exposed in the tuning panel rather than
+     * requiring a rebuild.
+     */
+    fun setCoverHalf(half: dev.foldphase.core.CoverHalf) {
+        engine.sceneMapping = engine.sceneMapping.copy(coverHalf = half)
     }
 
     fun currentSourceKind(): ProgressSourceKind =
@@ -251,7 +358,12 @@ class FoldController(private val app: Application) {
         pipeline.detach()
     }
 
+    private var frameCheckCountdown = FRAME_CHECK_INTERVAL
+
     private companion object {
+        /** Frames between adaptive-quality evaluations. ~1 s at 120 Hz. */
+        const val FRAME_CHECK_INTERVAL = 120
+
         /**
          * Stop rewriting the stored handoff point once we have a solid median. Beyond a
          * handful of observations the estimate stops improving and the writes are just

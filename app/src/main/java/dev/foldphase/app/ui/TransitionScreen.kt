@@ -68,6 +68,7 @@ fun TransitionScreen(controller: FoldController, modifier: Modifier = Modifier) 
     val progress by controller.progress.collectAsStateWithLifecycle()
     val tuning by controller.tuning.collectAsStateWithLifecycle()
     val usingVirtual by controller.usingVirtualHinge.collectAsStateWithLifecycle()
+    val activeQuality by controller.activeQuality.collectAsStateWithLifecycle()
 
     var source by remember { mutableStateOf(PreviewSource.SCREENSHOTS) }
     var sliderProgress by remember { mutableFloatStateOf(0f) }
@@ -148,8 +149,11 @@ fun TransitionScreen(controller: FoldController, modifier: Modifier = Modifier) 
                             coverTexture = controller.textureCache.coverTexture,
                             innerTexture = controller.textureCache.innerTexture,
                             sceneMapping = controller.engine.sceneMapping,
-                            quality = tuning.shaderQuality,
+                            quality = activeQuality,
                             hingeFalloff = tuning.hingeFalloff,
+                            onPathResolved = { path, detail ->
+                                controller.reportRenderPath(path.name, detail)
+                            },
                         )
                     }
                     PreviewSource.LAUNCHER_SCENE -> {
