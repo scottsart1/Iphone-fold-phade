@@ -19,6 +19,7 @@ import dev.foldphase.renderer.FrameMetrics
 import dev.foldphase.renderer.SceneTextureCache
 import dev.foldphase.sensors.AutoCalibrator
 import dev.foldphase.sensors.CalibrationStore
+import dev.foldphase.sensors.DualAccelHingeSource
 import dev.foldphase.sensors.DisplayProfile
 import dev.foldphase.sensors.FilterConfig
 import dev.foldphase.sensors.FoldPipeline
@@ -91,6 +92,17 @@ class FoldController(private val app: Application) {
 
     /** The sensor currently driving the pipeline. Null means the platform default. */
     private var selectedSensor: android.hardware.Sensor? = null
+
+    /**
+     * Continuous hinge angle derived from the two per-half accelerometers.
+     *
+     * The fallback for devices whose `TYPE_HINGE_ANGLE` is quantised — which the Galaxy
+     * Z Fold 7 measurably is, reporting only 0/90/180. See [DualAccelHingeSource].
+     */
+    val dualAccelSource by lazy { DualAccelHingeSource(app) }
+
+    private val _usingDualAccel = MutableStateFlow(false)
+    val usingDualAccel: StateFlow<Boolean> = _usingDualAccel.asStateFlow()
 
     private val _tuning = MutableStateFlow(FoldTuningPresets.APPLE_LIKE)
     val tuning: StateFlow<FoldTuning> = _tuning.asStateFlow()
@@ -261,6 +273,13 @@ class FoldController(private val app: Application) {
     fun useRealSensor() {
         _usingVirtualHinge.value = false
         pipeline.resetFilters()
+
+        if (_usingDualAccel.value && dualAccelSource.isAvailable()) {
+            pipeline.attach(dualAccelSource)
+            _activeSensorName.value = "Dual accelerometer fusion"
+            return
+        }
+
         val source = currentSensorSource()
         if (source != null && source.isAvailable()) {
             pipeline.attach(source)
@@ -269,6 +288,22 @@ class FoldController(private val app: Application) {
             pipeline.attach(virtualSource)
             _activeSensorName.value = null
         }
+    }
+
+    /**
+     * Switch between the hardware hinge sensor and the dual-accelerometer fusion.
+     *
+     * Clears calibration on the way, because the fusion reports a derived dihedral angle
+     * whose zero point and direction need not match the hardware sensor's.
+     */
+    fun useDualAccel(enabled: Boolean) {
+        _usingDualAccel.value = enabled
+        _usingVirtualHinge.value = false
+        autoCalibrator.reset()
+        autoCalibrator.configureForRange(180f)
+        scope.launch { calibrationStore.clear() }
+        pipeline.resetFilters()
+        useRealSensor()
     }
 
     private var activeSensorSource: HingeAngleSensorSource? = null
@@ -293,6 +328,7 @@ class FoldController(private val app: Application) {
      */
     fun selectSensor(sensor: android.hardware.Sensor?) {
         selectedSensor = sensor
+        _usingDualAccel.value = false
         autoCalibrator.reset()
         sensor?.let { autoCalibrator.configureForRange(it.maximumRange) }
         scope.launch { calibrationStore.clear() }

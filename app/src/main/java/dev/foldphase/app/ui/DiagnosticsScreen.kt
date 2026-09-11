@@ -60,6 +60,14 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
     var showReport by remember { mutableStateOf(false) }
     val probeStats by controller.sensorProbe.stats.collectAsStateWithLifecycle()
     val activeSensorName by controller.activeSensorName.collectAsStateWithLifecycle()
+    val usingDualAccel by controller.usingDualAccel.collectAsStateWithLifecycle()
+
+    // The fusion source must be running for its live readouts to mean anything, even when
+    // it is not the one driving the pipeline.
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        controller.dualAccelSource.start()
+        onDispose { if (!controller.usingDualAccel.value) controller.dualAccelSource.stop() }
+    }
 
     // The probe registers several sensors at once, so it runs only while this screen is
     // visible rather than for the life of the app.
@@ -111,6 +119,104 @@ fun DiagnosticsScreen(controller: FoldController, modifier: Modifier = Modifier)
                         else -> "none yet — fold fully once, or run the wizard"
                     },
                 )
+            }
+        }
+
+        // ---- Dual-accelerometer fusion -----------------------------------------
+        item {
+            val src = controller.dualAccelSource
+            SectionCard("Continuous angle from two accelerometers") {
+                Text(
+                    "This device has an accelerometer in each half. The angle between " +
+                        "their two gravity vectors is the fold angle — continuously, and " +
+                        "at far above display rate. It is how a laptop computes its lid " +
+                        "angle, and almost certainly how Samsung's own lid_angle_fusion " +
+                        "works internally.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+                Readout("Main accelerometer", src.mainAccel?.name?.trim() ?: "not found")
+                Readout("Second-half accelerometer", src.subAccel?.name?.trim() ?: "NOT FOUND")
+                Readout("Main events", src.mainEvents.toString())
+                Readout(
+                    "Second-half events",
+                    if (src.subEvents == 0L && src.subAccel != null) {
+                        "0 — listed but silent (blocked?)"
+                    } else {
+                        src.subEvents.toString()
+                    },
+                )
+                Readout(
+                    "Derived fold angle",
+                    if (src.dihedralDeg.isNaN()) "—" else "${src.dihedralDeg.fmt(2)}°",
+                )
+                Readout("Confidence", src.confidence.fmt(3))
+
+                if (src.subAccel == null) {
+                    Text(
+                        "No second accelerometer on this device — fusion is not possible.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                } else if (src.subEvents == 0L && src.mainEvents > 10L) {
+                    Text(
+                        "The second accelerometer is listed but has delivered nothing " +
+                            "while the main one is reporting — the same signature as " +
+                            "Samsung's gated fold sensors. Move the device to be sure.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                } else if (src.subEvents > 10L) {
+                    Text(
+                        "Both halves are reporting. This can drive the animation.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+
+                Text(
+                    "Confidence drops when the device is being moved (gravity is then " +
+                        "contaminated by motion) or when the fold line is close to " +
+                        "vertical (the geometry degenerates). Hold the hinge roughly " +
+                        "horizontal and move slowly.",
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 10.dp),
+                ) {
+                    Button(
+                        enabled = src.isAvailable() && !usingDualAccel,
+                        onClick = {
+                            controller.useDualAccel(true)
+                            exportMessage =
+                                "Fusion is now driving the animation. Fold fully open and " +
+                                    "shut once to calibrate it."
+                        },
+                    ) { Text("Drive animation with this") }
+
+                    OutlinedButton(
+                        enabled = usingDualAccel,
+                        onClick = {
+                            controller.useDualAccel(false)
+                            exportMessage = "Back to the hardware hinge sensor."
+                        },
+                    ) { Text("Back to hinge sensor") }
+                }
+                if (usingDualAccel) {
+                    Text(
+                        "IN USE",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
             }
         }
 
@@ -527,6 +633,11 @@ private fun appState(
             "not seen"
         },
         "cover half" to controller.engine.sceneMapping.coverHalf.name,
+        "dual-accel" to with(controller.dualAccelSource) {
+            "sub=${subAccel?.let { "found" } ?: "MISSING"} " +
+                "mainEvents=$mainEvents subEvents=$subEvents " +
+                "angle=${dihedralDeg.fmt(1)} conf=${confidence.fmt(2)}"
+        },
         "fold state" to "${progress.state.name} / ${progress.direction.name}",
         "active display" to progress.activeDisplay.name,
         "progress" to progress.progress.fmt(4),

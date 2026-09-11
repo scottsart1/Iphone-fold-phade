@@ -47,11 +47,26 @@ data class ProbeStats(
      */
     val verdict: Verdict
         get() = when {
+            // Conclusive regardless of event count: if the readings already span most of
+            // the declared range and there are only a handful of them, the intermediate
+            // values do not exist. Waiting for more events cannot change that, and a
+            // quantised sensor emits so few events per fold that an event-count gate
+            // would stall the verdict for several folds.
+            spansMostOfRange && distinctValues in 1..CONCLUSIVE_QUANTISED_MAX ->
+                Verdict.QUANTISED
+
             eventCount < MIN_EVENTS_TO_JUDGE -> Verdict.INSUFFICIENT_DATA
             distinctValues >= CONTINUOUS_THRESHOLD -> Verdict.CONTINUOUS
             distinctValues <= QUANTISED_THRESHOLD -> Verdict.QUANTISED
             else -> Verdict.COARSE
         }
+
+    /** Whether the observed readings cover most of the sensor's declared range. */
+    val spansMostOfRange: Boolean
+        get() = declaredMaxRange > 0f && span >= declaredMaxRange * RANGE_COVERAGE_FRACTION
+
+    /** True when the sensor is listed but has never delivered an event. */
+    val isSilent: Boolean get() = eventCount == 0L
 
     enum class Verdict {
         /** Not enough events yet. Move the hinge more. */
@@ -87,6 +102,12 @@ data class ProbeStats(
         const val MIN_EVENTS_TO_JUDGE = 12
         const val CONTINUOUS_THRESHOLD = 20
         const val QUANTISED_THRESHOLD = 6
+
+        /** Distinct values at or below which full-range coverage proves quantisation. */
+        const val CONCLUSIVE_QUANTISED_MAX = 5
+
+        /** Fraction of the declared range that counts as "most of it". */
+        const val RANGE_COVERAGE_FRACTION = 0.8f
     }
 }
 
@@ -118,11 +139,22 @@ class SensorProbe(context: Context) : SensorEventListener {
     private val sensorManager =
         context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-    /** Every sensor worth testing as a hinge-angle source, standard one first. */
+    /**
+     * Every sensor worth testing as a hinge-angle source, standard one first.
+     *
+     * Includes the **per-half inertial sensors** as well as the obvious fold sensors.
+     * They are not hinge sensors themselves, but on a device whose hinge sensor is
+     * quantised they are the raw material for deriving a continuous angle
+     * (see [DualAccelHingeSource]) — and the open question about them is simply whether a
+     * third-party app receives their events at all, which only the probe can answer.
+     */
     val candidates: List<Sensor> = buildList {
         sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)?.let { add(it) }
-        sensorManager.getSensorList(Sensor.TYPE_ALL)
-            .filter { it.type != Sensor.TYPE_HINGE_ANGLE && looksFoldRelated(it) }
+        val all = sensorManager.getSensorList(Sensor.TYPE_ALL)
+        all.filter { it.type != Sensor.TYPE_HINGE_ANGLE && looksFoldRelated(it) }
+            .sortedBy { it.name }
+            .forEach { add(it) }
+        all.filter { isSecondHalfInertial(it) }
             .sortedBy { it.name }
             .forEach { add(it) }
     }
@@ -249,6 +281,21 @@ class SensorProbe(context: Context) : SensorEventListener {
          * use vendor type integers (65686, 65695, 65697 on the Fold 7) that carry no
          * meaning outside their own HAL.
          */
+        /**
+         * The inertial sensors mounted in the device's second half.
+         *
+         * Matched by string type and name rather than the vendor type integers (65687 /
+         * 65689 on the Fold 7), which carry no meaning outside Samsung's own HAL and
+         * would not survive a firmware change.
+         */
+        fun isSecondHalfInertial(sensor: Sensor): Boolean {
+            val haystack = "${sensor.name} ${sensor.stringType}".lowercase()
+            if ("uncalibrated" in haystack) return false
+            val isSecondHalf = "_sub" in haystack || "-sub" in haystack
+            val isInertial = "accelerometer" in haystack || "gyroscope" in haystack
+            return isSecondHalf && isInertial
+        }
+
         fun looksFoldRelated(sensor: Sensor): Boolean {
             val haystack = "${sensor.name} ${sensor.stringType}".lowercase()
             if ("grip" in haystack || "pocket" in haystack) return false

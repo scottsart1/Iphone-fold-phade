@@ -97,6 +97,66 @@ matching frame; when it is not, nothing breaks.
 
 ---
 
+## 3b. The Galaxy Z Fold 7's hinge sensor is quantised to three positions
+
+**MEASURED ON HARDWARE, 2026-09-11, SM-F966U / Android 16.** This is the most important
+finding in this document and it was not predicted by any of the research.
+
+**Desired behavior.** A continuous hinge angle, so the animation can be scrubbed by hand.
+This is the project's central requirement.
+
+**Android limitation — actually a Samsung hardware/HAL one.**
+`android.sensor.hinge_angle` on the Fold 7 declares `resolution = 90.0` over a `0 … 180`
+range, and the probe confirms it reports **exactly three distinct values across the whole
+range: 0, 90 and 180**. The declared resolution was literal, not the usual HAL placeholder.
+
+Three detent positions cannot drive a scrubbed animation. No filter can recover
+intermediate angles, because they were never sampled — this is missing information, not
+noise.
+
+Corroborating detail: the learned panel-handoff point came out at `p = 0.499`, i.e. the
+display switches when the sensor reads exactly 90.
+
+**What was attempted.** The device exposes three Samsung fold sensors declaring a far
+finer `0.01` resolution — `com.samsung.sensor.folding_angle` (65686),
+`com.samsung.sensor.folding_state` / `lid_angle_fusion` (65695), and
+`com.samsung.sensor.folding_state_lpm` (65697). All three accept `registerListener` and
+then deliver **zero events** to a third-party app, in the same window in which
+`hinge_angle` fired repeatedly. That is the signature of vendor sensors gated behind a
+Samsung signature permission.
+
+**Best non-root workaround — and it is a real one.** The Fold 7 has an **accelerometer in
+each half** (`android.sensor.accelerometer` and
+`com.samsung.sensor.accelerometer_sub`, type 65687), each declaring a 2084 µs minimum
+delay — up to 479 Hz.
+
+With a gravity vector measured in each half's own frame, the **dihedral angle** between
+the halves is the fold angle, continuously and at far above display rate. This is how a
+laptop computes its lid angle, and almost certainly how `lid_angle_fusion` derives the
+value Samsung does not expose. Implemented in `DualAccelHingeSource`; selectable from the
+Sensors tab.
+
+Its honest weaknesses, both detected and surfaced as a live confidence value rather than
+hidden:
+- **Gravity parallel to the hinge.** Holding the device with the fold line vertical
+  collapses both projections and the angle becomes undefined.
+- **Movement.** An accelerometer reads gravity *plus* linear acceleration, so the angle is
+  only trustworthy while the device is roughly at rest.
+
+Neither is fatal for the real gesture — opening a foldable is slow and usually done with
+the hinge roughly horizontal — but both are real.
+
+**Open question at time of writing:** whether `accelerometer_sub` delivers events to a
+third-party app, or is gated like the fold sensors. The Sensors tab reports its event
+count directly. If it is also gated, then **continuous hinge angle is not available to an
+unprivileged app on this device**, and the honest position is that the project's central
+requirement cannot be met without root — see §8.
+
+**Would root solve it?** Yes, completely. A privileged app can read `lid_angle_fusion`
+directly, which is a continuous fused angle Samsung already computes.
+
+---
+
 ## 4. The hinge sensor is on-change and non-wakeup
 
 **Desired behavior.** Continuous hinge angle at display refresh rate, always.
